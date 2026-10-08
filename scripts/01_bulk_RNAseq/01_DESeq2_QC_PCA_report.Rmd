@@ -1,0 +1,433 @@
+---
+title: "Bulk 3'-RNA-seq of WT and Epcam-/- mESC: QC, PCA and DESeq2 report"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+   toc: true
+   toc_depth: 3
+   toc_float: true
+params:
+  data_dir: "../../data/bulk_RNAseq"
+---
+
+<!--
+Module 01 | Bulk 3'-RNA-seq (GEO: GSE293121)
+Report template: read-count QC, VST, PCA (top 10,000 variable genes), top-loading
+genes, clustering heatmap and DESeq2 + IHW differential expression for the D0
+contrasts and the WT-vs-KO time-course designs.
+Input : data/bulk_RNAseq/featurecounts_mESC_EpCAM_bulkRNAseq.Rdata
+Output: HTML report + DE tables (xlsx) written next to this Rmd.
+Render: rmarkdown::render("scripts/01_bulk_RNAseq/01_DESeq2_QC_PCA_report.Rmd")
+-->
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+***
+
+## Background
+
+### Rationale
+## Analysis
+
+The following analysis starts with importing the read counts into DEseq2 followed by PCA analysis, differential expression analysis and GSEA analysis.
+
+### Importing the data
+
+loading required R libraries ...
+
+```{r, message=F}
+library(Rsubread)
+library(DESeq2)
+library(EnsDb.Mmusculus.v79)
+library(EnsDb.Hsapiens.v86)
+library(pcaExplorer)
+library(IHW)
+library(pheatmap)
+library(gplots)
+library(EnhancedVolcano)
+library(WriteXLS)
+library(DT)
+library(readxl)
+library(tidyverse)
+library(gdata)
+library(knitr)
+library(gtools)
+```
+
+... importing the previously generated read counts.
+```{r}
+## featureCounts output object (list with element $counts: Ensembl gene IDs x samples)
+fc.mouse <- mget(load(file.path(params$data_dir, "featurecounts_mESC_EpCAM_bulkRNAseq.Rdata")))[[1]]
+fc.mm <- fc.mouse$counts
+```
+
+assess total number of mapped reads
+```{r}
+smps <- colnames(fc.mm)
+smps <- gsub("Sample.","",smps)
+smps <- gsub("Aligned.sortedByCoord.out.bam","",smps)
+smps <- gsub(".1$","",smps)
+
+cs.mm <- colSums(fc.mm)
+names(cs.mm) <- smps
+
+smps.r <- gsub("\\.1","",smps)
+smps.r <- gsub("\\.2","",smps.r)
+smps.r <- gsub("\\.3","",smps.r)
+smps.r <- gsub("\\.4","",smps.r)
+
+table(smps.r)
+
+cs.df <- data.frame(names=c(smps),mreads = c( cs.mm), samplenames = smps.r)
+
+ggplot(cs.df, aes(x=names, y=mreads,colour = samplenames))+ geom_point(size = 3) + theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) + ylim(c(0,10^7))
+```
+
+Samples nicely resulted in approx. 6-8M mapped reads per sample.
+
+... translating ensembl gene ids to mgi gene symbols and summing up reads from the same genes
+```{r}
+
+keep.mm <- rowSums(fc.mm) > 100
+table(keep.mm)
+fc.mm.filt <- fc.mm[keep.mm,]
+
+
+sms <- colnames(fc.mm.filt)
+sms <- gsub("Sample.","",sms)
+sms <- gsub(".1Aligned.sortedByCoord.out.bam","",sms)
+
+colnames(fc.mm.filt) <- sms
+
+
+###mm
+ens.cts.mm <- row.names(fc.mm.filt)
+
+anno.result.mm <- AnnotationDbi::select(EnsDb.Mmusculus.v79, keys=ens.cts.mm, columns=c("GENEID","SYMBOL","GENENAME","ENTREZID"),keytype="GENEID")
+
+fc.mm.filt <- fc.mm.filt[anno.result.mm$GENEID,]
+
+all.equal.character(row.names(fc.mm.filt), anno.result.mm$GENEID)
+
+row.names(fc.mm.filt) <- anno.result.mm$SYMBOL
+
+hd.pc.pca.mm.dat <- data.frame(gene=row.names(fc.mm.filt),fc.mm.filt)
+hd.pc.pca.mm.coll <- aggregate(. ~ gene, data = hd.pc.pca.mm.dat, sum)
+row.names(hd.pc.pca.mm.coll) <- hd.pc.pca.mm.coll$gene
+hd.pc.pca.mm.coll <- hd.pc.pca.mm.coll[-1,-1]
+
+em.mm <- hd.pc.pca.mm.coll
+
+
+treatment <- smps.r
+treatment <- factor(treatment)
+fakeSampleTable.mm <- data.frame(sampleNames = sms, sampleFiles = sms, treatment = treatment)
+
+```
+
+```{r}
+ddsHTSeq.mm <- DESeqDataSetFromMatrix(countData = em.mm, colData  = fakeSampleTable.mm,  design= ~treatment)
+
+```
+
+... building a log2 like expression matrix using variance stabilised transformation of read counts.
+
+```{r}
+vst.mm <- vst(ddsHTSeq.mm)
+```
+
+## Principal component analysis (PCA)
+
+### Principal component analysis (PCA) plots
+
+PCA plots with the first two principal components was generated.
+
+... for mouse ESC samples
+
+```{r, fig.width=15, fig.height=15}
+
+pcaplot(vst.mm,intgroup = c("treatment"), ntop = 10000,
+        pcX = 1, pcY = 2, title = "PCA RNAseq mouse", text_labels = T, ellipse.prob = .5)
+
+```
+### Principal component analysis (PCA) top loadings
+
+In the following the 20 genes with the hightest loadings (negative and positive) of PC1 are shown in the form of a barplot.
+
+```{r, fig.width=10, fig.height=7}
+pcaobj.mm <- prcomp(t(assay(vst.mm)))
+hi_loadings(pcaobj.mm,topN = 40, title = "Top/bottom loadings mouse ")
+
+```
+
+
+## Hierarchical clustering heatmaps with 50 most variant genes
+
+```{r, fig.width=10, fig.height=10}
+a.vst.mm <- assay(vst.mm)
+var.mm <- apply(a.vst.mm, MARGIN = 1, FUN = var)
+o.var.mm <- order(var.mm, decreasing = T)
+
+pheatmap(a.vst.mm[o.var.mm,][1:50,], main = "mouse")
+
+
+```
+
+## Differential gene expression analysis
+
+Differential gene expression between treated and control samples was calculated and p-values adjusted using the Benjamini-Hochberg adjustment for multiple-testing error referred to as False Discovery Rate. Genes with a FDR of smaller than 0.05 and an absolut log2 FC of greater than 0.5 were considered as statistically significant. The raw pvalues were weighted (adjusted) prior FDR correction using the Independent hypothesis weighting (IHW) approach. Explanation and reference on IHW can be found in the [DEseq2 reference manual](https://bioconductor.org/packages/release/bioc/vignettes/DESeq2/inst/doc/DESeq2.html){target="_blank"}.
+
+
+### comparison 1 N114.D0 vs WT.D0
+```{r}
+
+ddsHTSeq.mm.c1 <- ddsHTSeq.mm[,ddsHTSeq.mm$treatment%in%c("N114.D0","WT.D0")]
+
+ddsHTSeq.mm.c1$treatment <- factor(as.character(ddsHTSeq.mm.c1$treatment))
+ddsHTSeq.mm.c1$treatment <- relevel(ddsHTSeq.mm.c1$treatment, ref = "WT.D0")
+
+dds.c1 <- DESeq(ddsHTSeq.mm.c1)
+# treatment_WT.D0_vs_N114.D0
+
+res.c1 <- results(dds.c1, filterFun=ihw, lfcThreshold = 1)
+
+summary(res.c1)
+
+res.c1.plot <-  res.c1[!is.na(res.c1$padj),]
+
+```
+
+### Volcano plot N114.D0 vs WT.D0
+
+A volcano plot plotting the effect size (log2 fold-change) vs. adjusted p-values was generated.
+
+```{r, fig.width=7, fig.height=7}
+
+
+v.c1 <- data.frame(res.c1.plot[,c(2,6)])
+colnames(v.c1)[2] <- "FDR"
+  ev.c1 <- EnhancedVolcano(v.c1,
+    lab = rownames(v.c1),
+    x = 'log2FoldChange',
+    y = 'FDR',
+    title = 'c1 T1 versus T0',
+    pCutoff = 0.25,
+    FCcutoff = 0,
+    pointSize = 3.0,
+    labSize = 3.0,
+    ylab=bquote(~-Log[10] ~ italic(FDR)),
+    drawconnectors = T)
+
+
+ev.c1
+
+```
+
+### Tabular results N114.D0 vs WT.D0
+
+```{r}
+res.sig.c1 <- res.c1[!is.na(res.c1$padj),]
+res.sig.c1 <- res.sig.c1[abs(res.sig.c1$log2FoldChange) > 1,]
+res.sig.c1 <- res.sig.c1[res.sig.c1$padj < 0.1,]
+res.sig.c1 <- res.sig.c1[order(res.sig.c1$pvalue),]
+
+
+res.c1.df <- data.frame(res.c1)
+res.sig.c1.df <- data.frame(res.sig.c1)
+
+WriteXLS(c("res.c1.df","res.sig.c1.df"),"RNAseq_mESC_Epcam_KO_comp_1_N114.D0_vs_WT.D0.xlsx", SheetNames = c("all.results","stat.sig.results"), row.names = T)
+```
+
+### Heatmap with the top (50) differentially expressed genes
+
+Hierarchical clustering of samples was conducted with z-scaled expression values of the top 50 differentially expressed genes between treated and control samples.
+
+```{r, fig.width=15, fig.height=12}
+
+max.genes <- if(nrow(res.sig.c1) >= 50) 50 else nrow(res.sig.c1)
+
+vst.c1 <- vst(dds.c1)
+
+hmd <- assay(vst.c1[row.names(res.sig.c1)[1:max.genes],])
+colnames(hmd) <- dds.c1$treatment
+
+pheatmap(hmd, col = bluered(50), cluster_rows = T, scale = "row", main = "Dex genes N114.D0 vs WT.D0")
+```
+
+### comparison 2 N56.D0 vs WT.D0
+```{r}
+
+ddsHTSeq.mm.c2 <- ddsHTSeq.mm[,ddsHTSeq.mm$treatment%in%c("N56.D0","WT.D0")]
+
+ddsHTSeq.mm.c2$treatment <- factor(as.character(ddsHTSeq.mm.c2$treatment))
+ddsHTSeq.mm.c2$treatment <- relevel(ddsHTSeq.mm.c2$treatment, ref = "WT.D0")
+
+dds.c2 <- DESeq(ddsHTSeq.mm.c2)
+
+res.c2 <- results(dds.c2, filterFun=ihw, lfcThreshold = 1)
+
+summary(res.c2)
+
+res.c2.plot <-  res.c2[!is.na(res.c2$padj),]
+
+```
+
+### Volcano plot N56.D0 vs WT.D0
+
+A volcano plot plotting the effect size (log2 fold-change) vs. adjusted p-values was generated.
+
+```{r, fig.width=7, fig.height=7}
+
+
+v.c2 <- data.frame(res.c2.plot[,c(2,6)])
+colnames(v.c2)[2] <- "FDR"
+  ev.c2 <- EnhancedVolcano(v.c2,
+    lab = rownames(v.c2),
+    x = 'log2FoldChange',
+    y = 'FDR',
+    title = 'c2 T1 versus T0',
+    pCutoff = 0.25,
+    FCcutoff = 0,
+    pointSize = 3.0,
+    labSize = 3.0,
+    ylab=bquote(~-Log[10] ~ italic(FDR)),
+    drawconnectors = T)
+
+
+ev.c2
+
+```
+
+### Tabular results N56.D0 vs WT.D0
+
+```{r}
+res.sig.c2 <- res.c2[!is.na(res.c2$padj),]
+res.sig.c2 <- res.sig.c2[abs(res.sig.c2$log2FoldChange) > 1,]
+res.sig.c2 <- res.sig.c2[res.sig.c2$padj < 0.1,]
+res.sig.c2 <- res.sig.c2[order(res.sig.c2$pvalue),]
+
+
+res.c2.df <- data.frame(res.c2)
+res.sig.c2.df <- data.frame(res.sig.c2)
+
+WriteXLS(c("res.c2.df","res.sig.c2.df"),"RNAseq_mESC_Epcam_KO_comp_1_N56.D0_vs_WT.D0.xlsx", SheetNames = c("all.results","stat.sig.results"), row.names = T)
+```
+
+### Heatmap with the top (50) differentially expressed genes
+
+Hierarchical clustering of samples was conducted with z-scaled expression values of the top 50 differentially expressed genes between treated and control samples.
+
+```{r, fig.width=15, fig.height=12}
+
+max.genes <- if(nrow(res.sig.c2) >= 50) 50 else nrow(res.sig.c2)
+
+vst.c2 <- vst(dds.c2)
+
+hmd <- assay(vst.c2[row.names(res.sig.c2)[1:max.genes],])
+colnames(hmd) <- dds.c2$treatment
+
+pheatmap(hmd, col = bluered(50), cluster_rows = T, scale = "row", main = "Dex genes N56.D0 vs WT.D0")
+```
+
+## Differential expression along time
+
+### Prepare separate factor vectors treatment and time
+```{r}
+ddsHTSeq.mm$treatment
+
+time.vec <- ddsHTSeq.mm$treatment
+time.vec <- gsub("WT.","",time.vec)
+time.vec <- gsub("N56.","",time.vec)
+time.vec <- gsub("N114.","",time.vec)
+time.vec <- factor(time.vec)
+
+treat.vec <- ddsHTSeq.mm$treatment
+treat.vec <- gsub(".D0","",treat.vec)
+treat.vec <- gsub(".D3","",treat.vec)
+treat.vec <- gsub(".D7","",treat.vec)
+treat.vec <- gsub(".D10","",treat.vec)
+treat.vec <- factor(treat.vec)
+treat.vec <- relevel(treat.vec, ref = "WT")
+
+ddsHTSeq.mm$time <- time.vec
+ddsHTSeq.mm$treat <- treat.vec
+```
+
+### c3 N114 vs WT over time
+
+```{r}
+ddsHTSeq.mm.c3 <- ddsHTSeq.mm[,ddsHTSeq.mm$treat%in%c("WT","N114")]
+
+ddsHTSeq.mm.c3 <- DESeqDataSetFromMatrix(counts(ddsHTSeq.mm.c3), colData = colData(ddsHTSeq.mm.c3), design = time~treat)
+
+dds.c3 <- DESeq(ddsHTSeq.mm.c3)
+
+res.c3 <- results(dds.c3, filterFun=ihw, lfcThreshold = 0.5)
+
+summary(res.c3)
+
+res.c3.plot <-  res.c3[!is.na(res.c3$padj),]
+
+
+res.sig.c3 <- res.c3[!is.na(res.c3$padj),]
+res.sig.c3 <- res.sig.c3[abs(res.sig.c3$log2FoldChange) > 1,]
+res.sig.c3 <- res.sig.c3[res.sig.c3$padj < 0.1,]
+res.sig.c3 <- res.sig.c3[order(res.sig.c3$pvalue),]
+
+```
+
+Hierarchical clustering of samples was conducted with z-scaled expression values of the top 50 differentially expressed genes between treated and control samples.
+
+```{r, fig.width=15, fig.height=12}
+
+max.genes <- if(nrow(res.sig.c3) >= 50) 50 else nrow(res.sig.c3)
+
+vst.c3 <- vst(dds.c3)
+
+hmd <- assay(vst.c3[row.names(res.sig.c3)[1:max.genes],])
+colnames(hmd) <- dds.c3$treatment
+
+hmd <- hmd[,mixedsort(colnames(hmd))]
+
+pheatmap(hmd, col = bluered(50), cluster_rows = T, cluster_cols = F, scale = "row", main = "Dex genes N114 vs WT")
+```
+
+### c4 N56 vs WT over time
+
+```{r}
+ddsHTSeq.mm.c4 <- ddsHTSeq.mm[,ddsHTSeq.mm$treat%in%c("WT","N56")]
+
+ddsHTSeq.mm.c4 <- DESeqDataSetFromMatrix(counts(ddsHTSeq.mm.c4), colData = colData(ddsHTSeq.mm.c4), design = time~treat)
+
+dds.c4 <- DESeq(ddsHTSeq.mm.c4)
+
+res.c4 <- results(dds.c4, filterFun=ihw, lfcThreshold = 0.5)
+
+summary(res.c4)
+
+res.c4.plot <-  res.c4[!is.na(res.c4$padj),]
+
+
+res.sig.c4 <- res.c4[!is.na(res.c4$padj),]
+res.sig.c4 <- res.sig.c4[abs(res.sig.c4$log2FoldChange) > 1,]
+res.sig.c4 <- res.sig.c4[res.sig.c4$padj < 0.1,]
+res.sig.c4 <- res.sig.c4[order(res.sig.c4$pvalue),]
+
+```
+
+Hierarchical clustering of samples was conducted with z-scaled expression values of the top 50 differentially expressed genes between treated and control samples.
+
+```{r, fig.width=15, fig.height=12}
+
+max.genes <- if(nrow(res.sig.c4) >= 50) 50 else nrow(res.sig.c4)
+
+vst.c4 <- vst(dds.c4)
+
+hmd <- assay(vst.c4[row.names(res.sig.c4)[1:max.genes],])
+colnames(hmd) <- dds.c4$treatment
+hmd <- hmd[,mixedsort(colnames(hmd))]
+
+pheatmap(hmd, col = bluered(50), cluster_rows = T, cluster_cols = F, scale = "row", main = "Dex genes N56 vs WT")
+```
