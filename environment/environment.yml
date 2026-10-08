@@ -1,0 +1,23 @@
+# Conda environment for the Scanpy scripts (modules 03-05).
+#   conda env create -f environment/environment.yml
+#   conda activate epcam-eomes-scrna
+name: epcam-eomes-scrna
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python>=3.9
+  - scanpy
+  - anndata
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - umap-learn
+  - matplotlib
+  - seaborn
+  - python-igraph
+  - louvain
+  - leidenalg
+  - jupyterlab
+  - jupytext
