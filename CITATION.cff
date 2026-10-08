@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+message: "If you refer to this code, please cite it as below and cite the related article."
+title: "Transcriptomic analysis of EpCAM-dependent exit from pluripotency (analysis portfolio)"
+type: software
+license: MIT
+authors:
+  - family-names: Gouda
+    given-names: Mahesh
+references:
+  - type: article
+    title: "EpCAM supports exit from pluripotency of embryonic stem cells via Eomes"
+    authors:
+      - family-names: Gong
+        given-names: Ningyue
+      - family-names: Gouda
+        given-names: Mahesh
+      - name: "et al."
+    journal: "Cell Death & Disease"
+    volume: 17
+    start: 389
+    year: 2026
+    doi: "10.1038/s41419-026-08734-w"

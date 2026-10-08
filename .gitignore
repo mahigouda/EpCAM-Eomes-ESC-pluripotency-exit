@@ -1,0 +1,34 @@
+# Data and results are not version-controlled (see data/README.md)
+data/*
+!data/README.md
+results/*
+!results/.gitkeep
+
+# Large / binary analysis objects
+*.rds
+*.RData
+*.Rdata
+*.h5ad
+*.h5
+*.loom
+*.mtx
+*.mtx.gz
+
+# R / RStudio
+.Rhistory
+.RData
+.Rproj.user/
+*_cache/
+*_files/
+*.html
+
+# Python / Jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+figures/
+
+# OS
+.DS_Store
+Thumbs.db
+._*
